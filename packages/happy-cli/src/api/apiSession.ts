@@ -398,16 +398,188 @@ export class ApiSessionClient extends EventEmitter {
         this.enqueueMessage(content);
     }
 
+    /**
+     * Convert a SessionEnvelope into legacy-format messages (role: 'user' or role: 'agent')
+     * and enqueue them. This replaces the previous role: 'session' wrapping so that
+     * iOS clients (which don't support session protocol normalization) can parse messages directly.
+     */
     private enqueueSessionProtocolEnvelope(envelope: SessionEnvelope, invalidate: boolean = true) {
-        const content = {
-            role: 'session',
-            content: envelope,
-            meta: {
-                sentFrom: 'cli'
-            }
-        };
+        const meta = { sentFrom: 'cli' };
 
-        this.enqueueMessage(content, invalidate);
+        // Lifecycle markers — not rendered as chat content, skip entirely
+        if (envelope.ev.t === 'turn-start' || envelope.ev.t === 'start' || envelope.ev.t === 'stop') {
+            return;
+        }
+
+        // Turn end → agent ready event
+        if (envelope.ev.t === 'turn-end') {
+            this.enqueueMessage({
+                role: 'agent',
+                content: {
+                    id: envelope.id,
+                    type: 'event',
+                    data: { type: 'ready' }
+                },
+                meta
+            }, invalidate);
+            return;
+        }
+
+        // Service message (agent only) → agent output/assistant text
+        if (envelope.ev.t === 'service') {
+            this.enqueueMessage({
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        uuid: envelope.id,
+                        parentUuid: envelope.subagent ?? null,
+                        isSidechain: !!envelope.subagent,
+                        message: {
+                            role: 'assistant',
+                            model: 'unknown',
+                            content: [{ type: 'text', text: envelope.ev.text }]
+                        }
+                    }
+                },
+                meta
+            }, invalidate);
+            return;
+        }
+
+        // Text events
+        if (envelope.ev.t === 'text') {
+            if (envelope.role === 'user') {
+                // User text → legacy user message
+                this.enqueueMessage({
+                    role: 'user',
+                    content: {
+                        type: 'text',
+                        text: envelope.ev.text
+                    },
+                    meta
+                }, invalidate);
+                return;
+            }
+
+            // Agent text (including thinking) → agent output/assistant
+            const contentItem = envelope.ev.thinking
+                ? { type: 'thinking' as const, thinking: envelope.ev.text }
+                : { type: 'text' as const, text: envelope.ev.text };
+
+            this.enqueueMessage({
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        uuid: envelope.id,
+                        parentUuid: envelope.subagent ?? null,
+                        isSidechain: !!envelope.subagent,
+                        message: {
+                            role: 'assistant',
+                            model: 'unknown',
+                            content: [contentItem]
+                        }
+                    }
+                },
+                meta
+            }, invalidate);
+            return;
+        }
+
+        // Tool call start → agent output/assistant with tool_use
+        if (envelope.ev.t === 'tool-call-start') {
+            this.enqueueMessage({
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        uuid: envelope.id,
+                        parentUuid: envelope.subagent ?? null,
+                        isSidechain: !!envelope.subagent,
+                        message: {
+                            role: 'assistant',
+                            model: 'unknown',
+                            content: [{
+                                type: 'tool_use',
+                                id: envelope.ev.call,
+                                name: envelope.ev.name || 'unknown',
+                                input: envelope.ev.args
+                            }]
+                        }
+                    }
+                },
+                meta
+            }, invalidate);
+            return;
+        }
+
+        // Tool call end → agent output/assistant with tool_result
+        if (envelope.ev.t === 'tool-call-end') {
+            this.enqueueMessage({
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        uuid: envelope.id,
+                        parentUuid: envelope.subagent ?? null,
+                        isSidechain: !!envelope.subagent,
+                        message: {
+                            role: 'assistant',
+                            model: 'unknown',
+                            content: [{
+                                type: 'tool_result',
+                                tool_use_id: envelope.ev.call,
+                                content: '',
+                                is_error: false
+                            }]
+                        }
+                    }
+                },
+                meta
+            }, invalidate);
+            return;
+        }
+
+        // File event → agent output/assistant with tool_use (file attachment)
+        if (envelope.ev.t === 'file') {
+            const maybeImage = envelope.ev.image
+                ? { image: { width: envelope.ev.image.width, height: envelope.ev.image.height, thumbhash: envelope.ev.image.thumbhash } }
+                : {};
+            this.enqueueMessage({
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        uuid: envelope.id,
+                        parentUuid: envelope.subagent ?? null,
+                        isSidechain: !!envelope.subagent,
+                        message: {
+                            role: 'assistant',
+                            model: 'unknown',
+                            content: [{
+                                type: 'tool_use',
+                                id: envelope.id,
+                                name: 'file',
+                                input: {
+                                    ref: envelope.ev.ref,
+                                    name: envelope.ev.name,
+                                    size: envelope.ev.size,
+                                    ...maybeImage
+                                }
+                            }]
+                        }
+                    }
+                },
+                meta
+            }, invalidate);
+            return;
+        }
     }
 
     sendSessionProtocolMessage(envelope: SessionEnvelope) {
