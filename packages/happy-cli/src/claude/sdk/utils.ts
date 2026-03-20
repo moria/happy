@@ -142,7 +142,8 @@ export function getDefaultClaudeCodePath(): string {
     const isCustomBackend = backendName !== 'claude'
     
     // Allow explicit override via env var
-    if (process.env.HAPPY_CLAUDE_PATH) {
+    // But skip if a custom backend is specified — user wants that backend, not a hardcoded path
+    if (!isCustomBackend && process.env.HAPPY_CLAUDE_PATH) {
         logger.debug(`[Claude SDK] Using HAPPY_CLAUDE_PATH: ${process.env.HAPPY_CLAUDE_PATH}`)
         return process.env.HAPPY_CLAUDE_PATH
     }

@@ -383,12 +383,17 @@ function findLatestVersionBinary(versionsDir, binaryName = null) {
 /**
  * Find path to globally installed Claude Code CLI
  * Priority: HAPPY_CLAUDE_PATH env var > PATH > npm > Bun > Homebrew > Native
+ * Note: HAPPY_CLAUDE_PATH is ignored when a custom backend is specified via HAPPY_CLAUDE_BACKEND,
+ *       because the user's intent is to use that specific backend, not a hardcoded path.
  * @returns {{path: string, source: string}|null} Path and source, or null if not found
  */
 function findGlobalClaudeCliPath() {
     // 1. Environment variable (explicit override) - highest priority
+    //    But skip if a custom backend is specified (user wants that backend, not a hardcoded path)
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+    const isCustomBackend = backendName !== 'claude';
     const envPath = process.env.HAPPY_CLAUDE_PATH;
-    if (envPath && fs.existsSync(envPath)) {
+    if (!isCustomBackend && envPath && fs.existsSync(envPath)) {
         const resolved = resolvePathSafe(envPath) || envPath;
         return { path: resolved, source: 'HAPPY_CLAUDE_PATH' };
     }
@@ -399,8 +404,7 @@ function findGlobalClaudeCliPath() {
 
     // For custom backends (e.g. claude-internal), skip package-manager-specific paths
     // since those only contain the official @anthropic-ai/claude-code package
-    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
-    if (backendName !== 'claude') {
+    if (isCustomBackend) {
         return null;
     }
 
@@ -501,17 +505,22 @@ function runClaudeCli(cliPath) {
     
     // Check if it's a JavaScript file (.js or .cjs) or a binary file
     const isJsFile = cliPath.endsWith('.js') || cliPath.endsWith('.cjs');
+    
+    // Custom backends (e.g. claude-internal) must always be spawned as a child process,
+    // because import() may not trigger their CLI entry point (different bundling/packaging).
+    // Only the official Claude Code cli.js is guaranteed to work with import().
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+    const isCustomBackend = backendName !== 'claude';
 
-    if (isJsFile) {
-        // JavaScript file - use import to keep interceptors working
+    if (isJsFile && !isCustomBackend) {
+        // Official Claude Code JS file - use import to keep interceptors working
         const importUrl = pathToFileURL(cliPath).href;
         import(importUrl);
     } else {
-        // Binary file (e.g., Homebrew installation) - spawn directly
-        // Note: Interceptors won't work with binary files, but that's acceptable
-        // as binary files are self-contained and don't need interception
+        // Binary file, or custom backend JS file - spawn as child process
+        // Note: Interceptors won't work, but that's acceptable for these cases
         const args = process.argv.slice(2);
-        const child = spawn(cliPath, args, {
+        const child = spawn(isJsFile ? process.execPath : cliPath, isJsFile ? [cliPath, ...args] : args, {
             stdio: 'inherit',
             env: process.env
         });
