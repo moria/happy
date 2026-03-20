@@ -40,6 +40,7 @@ export async function claudeLocal(opts: {
     path: string,
     onSessionFound: (id: string) => void,
     onThinkingChange?: (thinking: boolean) => void,
+    onChildPid?: (pid: number) => void,
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[],
     allowedTools?: string[],
@@ -225,9 +226,14 @@ export async function claudeLocal(opts: {
             }
 
             // Add hook settings for session tracking (when available)
-            if (opts.hookSettingsPath) {
+            // Skip for custom backends — they may not support --settings flag
+            const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+            const isCustomBackend = backendName !== 'claude';
+            if (opts.hookSettingsPath && !isCustomBackend) {
                 args.push('--settings', opts.hookSettingsPath);
                 logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);
+            } else if (opts.hookSettingsPath && isCustomBackend) {
+                logger.debug(`[ClaudeLocal] Skipping --settings for custom backend '${backendName}' (may not support it)`);
             }
 
             if (!claudeCliPath || !existsSync(claudeCliPath)) {
@@ -294,6 +300,11 @@ export async function claudeLocal(opts: {
                         shell: spawnWithShell,
                     },
                 );
+
+                // Notify caller of child PID for session discovery via lsof
+                if (child.pid && opts.onChildPid) {
+                    opts.onChildPid(child.pid);
+                }
 
                 // Listen to the custom fd (fd 3) for thinking state tracking
                 if (child.stdio[3]) {

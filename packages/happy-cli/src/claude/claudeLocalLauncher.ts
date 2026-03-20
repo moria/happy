@@ -3,6 +3,11 @@ import { claudeLocal, ExitCodeError } from "./claudeLocal";
 import { Session } from "./session";
 import { Future } from "@/utils/future";
 import { createSessionScanner } from "./utils/sessionScanner";
+import { getProjectPath } from "./utils/path";
+import { watch } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { execFile } from "node:child_process";
 
 export type LauncherResult = { type: 'switch' } | { type: 'exit', code: number };
 
@@ -27,6 +32,97 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
     };
     session.addSessionFoundCallback(scannerSessionCallback);
 
+    // For custom backends that don't support --settings, use directory watching
+    // combined with lsof PID verification to discover session IDs.
+    // The PID check ensures we only claim .jsonl files opened by OUR child process,
+    // avoiding race conditions when multiple Happy instances run concurrently.
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+    const isCustomBackend = backendName !== 'claude';
+    let dirWatcherCleanup: (() => void) | null = null;
+    let childPid: number | null = null;
+
+    // Helper: check if a given PID (or any of its descendants) has a file open
+    function isFileOpenByPid(pid: number, filePath: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            // Use lsof to check if the process tree has the file open
+            // -p: filter by PID, +D would be too broad; we grep the output instead
+            execFile('lsof', ['-p', String(pid)], { timeout: 5000 }, (err, stdout) => {
+                if (err) {
+                    // lsof returns exit code 1 when no files found for PID, which is normal
+                    resolve(false);
+                    return;
+                }
+                resolve(stdout.includes(filePath));
+            });
+        });
+    }
+
+    // Helper: verify and claim a new .jsonl file via lsof
+    async function verifyAndClaimSession(filename: string, knownFiles: Set<string>, projectDir: string) {
+        if (!filename.endsWith('.jsonl') || knownFiles.has(filename)) return;
+        if (!childPid) {
+            logger.debug(`[local] Custom backend: found new file '${filename}' but child PID not yet known, skipping`);
+            return;
+        }
+
+        const fullPath = join(projectDir, filename);
+        const isOurs = await isFileOpenByPid(childPid, fullPath);
+        if (!isOurs) {
+            logger.debug(`[local] Custom backend: file '${filename}' not opened by PID ${childPid}, ignoring`);
+            return;
+        }
+
+        const sessionId = filename.replace('.jsonl', '');
+        logger.debug(`[local] Custom backend: verified '${filename}' belongs to PID ${childPid} → session ID: ${sessionId}`);
+        knownFiles.add(filename);
+        session.onSessionFound(sessionId);
+        scanner.onNewSession(sessionId);
+    }
+
+    if (isCustomBackend) {
+        const projectDir = getProjectPath(session.path);
+        // Take a snapshot of existing .jsonl files before Claude starts
+        let knownFiles = new Set<string>();
+        try {
+            const files = await readdir(projectDir);
+            for (const f of files) {
+                if (f.endsWith('.jsonl')) {
+                    knownFiles.add(f);
+                }
+            }
+        } catch {
+            // Directory may not exist yet
+        }
+        logger.debug(`[local] Custom backend '${backendName}': watching ${projectDir} for new .jsonl files with PID verification (${knownFiles.size} existing)`);
+
+        // Watch the project directory for new .jsonl files
+        let fsWatcher: ReturnType<typeof watch> | null = null;
+        try {
+            fsWatcher = watch(projectDir, (eventType, filename) => {
+                if (!filename) return;
+                verifyAndClaimSession(filename, knownFiles, projectDir);
+            });
+        } catch {
+            logger.debug(`[local] Custom backend: could not watch ${projectDir}, will poll`);
+        }
+
+        // Also poll periodically as a safety net (some OS/FS combos miss events)
+        const pollInterval = setInterval(async () => {
+            try {
+                const files = await readdir(projectDir);
+                for (const f of files) {
+                    await verifyAndClaimSession(f, knownFiles, projectDir);
+                }
+            } catch {
+                // Directory may not exist yet
+            }
+        }, 2000);
+
+        dirWatcherCleanup = () => {
+            fsWatcher?.close();
+            clearInterval(pollInterval);
+        };
+    }
 
     // Handle abort
     let exitReason: LauncherResult | null = null;
@@ -109,6 +205,10 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
                     sessionId: session.sessionId,
                     onSessionFound: handleSessionStart,
                     onThinkingChange: session.onThinkingChange,
+                    onChildPid: (pid) => {
+                        childPid = pid;
+                        logger.debug(`[local] Claude child process PID: ${pid}`);
+                    },
                     abort: processAbortController.signal,
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,
@@ -161,6 +261,9 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
         
         // Remove session found callback
         session.removeSessionFoundCallback(scannerSessionCallback);
+
+        // Cleanup directory watcher (for custom backends)
+        dirWatcherCleanup?.();
 
         // Cleanup
         await scanner.cleanup();

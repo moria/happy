@@ -76,6 +76,12 @@ export async function loop(opts: LoopOptions): Promise<number> {
                 const result = await claudeLocalLauncher(session);
                 switch (result.type ) {
                     case 'switch':
+                        // Flush pending messages before mode switch to ensure all
+                        // SessionScanner messages reach the server first.
+                        // This is critical because the iOS app re-fetches messages
+                        // when it receives new-message events, and we need all local
+                        // messages to be delivered before signaling the mode change.
+                        await opts.session.flush();
                         mode = 'remote';
                         opts.onModeChange?.(mode);
                         break;

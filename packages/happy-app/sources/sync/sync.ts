@@ -1892,9 +1892,13 @@ class Sync {
 
                     // Re-fetch messages when control returns to mobile (local -> remote mode switch)
                     // This catches up on any messages that were exchanged while desktop had control
+                    // controlledByUser means "desktop/local is in control":
+                    //   local mode  → controlledByUser = true
+                    //   remote mode → controlledByUser = false
+                    // So "desktop → mobile" = true → false
                     const wasControlledByUser = session.agentState?.controlledByUser;
                     const isNowControlledByUser = agentState?.controlledByUser;
-                    if (!wasControlledByUser && isNowControlledByUser) {
+                    if (wasControlledByUser && !isNowControlledByUser) {
                         log.log(`🔄 Control returned to mobile for session ${updateData.body.id}, re-fetching messages`);
                         this.onSessionVisible(updateData.body.id);
                     }
