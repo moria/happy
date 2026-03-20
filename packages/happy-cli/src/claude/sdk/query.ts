@@ -326,7 +326,8 @@ export function query(config: {
     // - If it's just 'claude' command → spawn('claude', args) with shell on Windows
     // - If it's a full path to binary → spawn(path, args)
     const isJsFile = pathToClaudeCodeExecutable.endsWith('.js') || pathToClaudeCodeExecutable.endsWith('.cjs')
-    const isCommandOnly = pathToClaudeCodeExecutable === 'claude'
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude'
+    const isCommandOnly = pathToClaudeCodeExecutable === 'claude' || pathToClaudeCodeExecutable === backendName
     
     // Validate executable path (skip for command-only mode)
     if (!isCommandOnly && !existsSync(pathToClaudeCodeExecutable)) {

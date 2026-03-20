@@ -23,8 +23,9 @@ const __dirname = join(__filename, '..')
  */
 function getGlobalClaudeVersion(): string | null {
     try {
+        const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude'
         const cleanEnv = getCleanEnv()
-        const output = execSync('claude --version', { 
+        const output = execSync(`${backendName} --version`, { 
             encoding: 'utf8', 
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: homedir(),
@@ -32,7 +33,7 @@ function getGlobalClaudeVersion(): string | null {
         }).trim()
         // Output format: "2.0.54 (Claude Code)" or similar
         const match = output.match(/(\d+\.\d+\.\d+)/)
-        logger.debug(`[Claude SDK] Global claude --version output: ${output}`)
+        logger.debug(`[Claude SDK] Global ${backendName} --version output: ${output}`)
         return match ? match[1] : null
     } catch {
         return null
@@ -89,32 +90,33 @@ export function getCleanEnv(): NodeJS.ProcessEnv {
 function findGlobalClaudePath(): string | null {
     const homeDir = homedir()
     const cleanEnv = getCleanEnv()
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude'
     
-    // PRIMARY: Check if 'claude' command works directly from home dir with clean PATH
+    // PRIMARY: Check if the backend command works directly from home dir with clean PATH
     try {
-        execSync('claude --version', { 
+        execSync(`${backendName} --version`, { 
             encoding: 'utf8', 
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: homeDir,
             env: cleanEnv
         })
-        logger.debug('[Claude SDK] Global claude command available (checked with clean PATH)')
-        return 'claude'
+        logger.debug(`[Claude SDK] Global ${backendName} command available (checked with clean PATH)`)
+        return backendName
     } catch {
-        // claude command not available globally
+        // command not available globally
     }
 
     // FALLBACK for Unix: try which to get actual path
     if (process.platform !== 'win32') {
         try {
-            const result = execSync('which claude', { 
+            const result = execSync(`which ${backendName}`, { 
                 encoding: 'utf8', 
                 stdio: ['pipe', 'pipe', 'pipe'],
                 cwd: homeDir,
                 env: cleanEnv
             }).trim()
             if (result && existsSync(result)) {
-                logger.debug(`[Claude SDK] Found global claude path via which: ${result}`)
+                logger.debug(`[Claude SDK] Found global ${backendName} path via which: ${result}`)
                 return result
             }
         } catch {
@@ -136,6 +138,8 @@ function findGlobalClaudePath(): string | null {
  */
 export function getDefaultClaudeCodePath(): string {
     const nodeModulesPath = join(__dirname, '..', '..', '..', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude'
+    const isCustomBackend = backendName !== 'claude'
     
     // Allow explicit override via env var
     if (process.env.HAPPY_CLAUDE_PATH) {
@@ -143,19 +147,22 @@ export function getDefaultClaudeCodePath(): string {
         return process.env.HAPPY_CLAUDE_PATH
     }
 
-    // Force bundled version if requested
-    if (process.env.HAPPY_USE_BUNDLED_CLAUDE === '1') {
+    // Force bundled version if requested (only for default claude)
+    if (!isCustomBackend && process.env.HAPPY_USE_BUNDLED_CLAUDE === '1') {
         logger.debug(`[Claude SDK] Forced bundled version: ${nodeModulesPath}`)
         return nodeModulesPath
     }
 
-    // Find global claude
+    // Find global backend
     const globalPath = findGlobalClaudePath()
     
 
-
-    // No global claude found - use bundled
+    // No global backend found
     if (!globalPath) {
+        if (isCustomBackend) {
+            // Custom backend must be found globally - no bundled fallback
+            throw new Error(`"${backendName}" is not installed or not in PATH. Make sure it is accessible via your shell.`)
+        }
         logger.debug(`[Claude SDK] No global claude found, using bundled: ${nodeModulesPath}`)
         return nodeModulesPath
     }

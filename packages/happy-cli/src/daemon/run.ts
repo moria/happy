@@ -36,7 +36,7 @@ export const initialMachineMetadata: MachineMetadata = {
 // Get environment variables for a profile, filtered for agent compatibility
 async function getProfileEnvironmentVariablesForAgent(
   profileId: string,
-  agentType: 'claude' | 'codex' | 'gemini'
+  agentType: string
 ): Promise<Record<string, string>> {
   try {
     const settings = await readSettings();
@@ -47,8 +47,12 @@ async function getProfileEnvironmentVariablesForAgent(
       return {};
     }
 
+    // Map custom Claude-compatible backends to 'claude' for profile compatibility check
+    const normalizedAgentType: 'claude' | 'codex' | 'gemini' =
+      (agentType === 'codex' || agentType === 'gemini') ? agentType : 'claude';
+
     // Check if profile is compatible with the agent
-    if (!validateProfileForAgent(profile, agentType)) {
+    if (!validateProfileForAgent(profile, normalizedAgentType)) {
       logger.debug(`[DAEMON RUN] Profile ${profileId} not compatible with agent ${agentType}`);
       return {};
     }
@@ -386,8 +390,18 @@ export async function startDaemon(): Promise<void> {
 
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
-          // Determine agent command - support claude, codex, and gemini
-          const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : 'claude');
+          // Determine agent command - support claude, codex, gemini, and custom Claude-compatible backends
+          let agent: string;
+          if (options.agent === 'gemini') {
+            agent = 'gemini';
+          } else if (options.agent === 'codex') {
+            agent = 'codex';
+          } else {
+            // For 'claude', undefined, or any custom backend name (e.g. 'claude-internal')
+            // All Claude-compatible backends go through the 'claude' entry point in index.ts
+            // The custom backend name is communicated via HAPPY_CLAUDE_BACKEND env var
+            agent = options.agent || 'claude';
+          }
           const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${agent} --happy-starting-mode remote --started-by daemon`;
 
           // Spawn in tmux with environment variables
@@ -407,6 +421,11 @@ export async function startDaemon(): Promise<void> {
 
           // Add extra environment variables (these should already be filtered)
           Object.assign(tmuxEnv, extraEnv);
+
+          // Inject custom backend name for Claude-compatible backends
+          if (options.agent && options.agent !== 'claude' && options.agent !== 'codex' && options.agent !== 'gemini') {
+            tmuxEnv.HAPPY_CLAUDE_BACKEND = options.agent;
+          }
 
           const tmuxResult = await tmux.spawnInTmux([fullCommand], {
             sessionName: tmuxSessionName,
@@ -470,8 +489,9 @@ export async function startDaemon(): Promise<void> {
         if (!useTmux) {
           logger.debug(`[DAEMON RUN] Using regular process spawning`);
 
-          // Construct arguments for the CLI - support claude, codex, and gemini
+          // Construct arguments for the CLI - support claude, codex, gemini, and custom Claude-compatible backends
           let agentCommand: string;
+          let isCustomClaudeBackend = false;
           switch (options.agent) {
             case 'claude':
             case undefined:
@@ -484,10 +504,11 @@ export async function startDaemon(): Promise<void> {
               agentCommand = 'gemini';
               break;
             default:
-              return {
-                type: 'error',
-                errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
-              };
+              // Custom Claude-compatible backend (e.g. 'claude-internal')
+              // Use the backend name directly as the subcommand — index.ts will recognize it
+              agentCommand = options.agent;
+              isCustomClaudeBackend = true;
+              break;
           }
           const args = [
             agentCommand,
@@ -503,7 +524,8 @@ export async function startDaemon(): Promise<void> {
             stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
             env: {
               ...process.env,
-              ...extraEnv
+              ...extraEnv,
+              ...(isCustomClaudeBackend ? { HAPPY_CLAUDE_BACKEND: options.agent } : {})
             }
           });
 

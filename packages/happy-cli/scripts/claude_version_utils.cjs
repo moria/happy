@@ -56,8 +56,10 @@ function findNpmGlobalCliPath() {
  */
 function findClaudeInPath() {
     try {
+        // Support custom Claude-compatible backends (e.g. claude-internal)
+        const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
         // Cross-platform: 'where' on Windows, 'which' on Unix
-        const command = process.platform === 'win32' ? 'where claude' : 'which claude';
+        const command = process.platform === 'win32' ? `where ${backendName}` : `which ${backendName}`;
         // stdio suppression for cleaner execution (from tiann/PR#83)
         const result = execSync(command, {
             encoding: 'utf8',
@@ -384,18 +386,25 @@ function findLatestVersionBinary(versionsDir, binaryName = null) {
  * @returns {{path: string, source: string}|null} Path and source, or null if not found
  */
 function findGlobalClaudeCliPath() {
-    // 1. Environment variable (explicit override)
+    // 1. Environment variable (explicit override) - highest priority
     const envPath = process.env.HAPPY_CLAUDE_PATH;
     if (envPath && fs.existsSync(envPath)) {
         const resolved = resolvePathSafe(envPath) || envPath;
         return { path: resolved, source: 'HAPPY_CLAUDE_PATH' };
     }
 
-    // 2. Check PATH (respects user's shell config)
+    // 2. Check PATH (respects user's shell config, uses HAPPY_CLAUDE_BACKEND if set)
     const pathResult = findClaudeInPath();
     if (pathResult) return pathResult;
 
-    // 3. Fall back to package manager detection
+    // For custom backends (e.g. claude-internal), skip package-manager-specific paths
+    // since those only contain the official @anthropic-ai/claude-code package
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+    if (backendName !== 'claude') {
+        return null;
+    }
+
+    // 3. Fall back to package manager detection (only for default 'claude')
     const npmPath = findNpmGlobalCliPath();
     if (npmPath) return { path: npmPath, source: 'npm' };
 
@@ -450,25 +459,34 @@ function compareVersions(a, b) {
  * @throws {Error} If no global installation found
  */
 function getClaudeCliPath() {
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
     const result = findGlobalClaudeCliPath();
     if (!result) {
-        console.error('\n\x1b[1m\x1b[33mClaude Code is not installed\x1b[0m\n');
-        console.error('Please install Claude Code using one of these methods:\n');
-        console.error('\x1b[1mOption 1 - npm (recommended, highest priority):\x1b[0m');
-        console.error('  \x1b[36mnpm install -g @anthropic-ai/claude-code\x1b[0m\n');
-        console.error('\x1b[1mOption 2 - Homebrew (macOS/Linux):\x1b[0m');
-        console.error('  \x1b[36mbrew install claude-code\x1b[0m\n');
-        console.error('\x1b[1mOption 3 - Native installer:\x1b[0m');
-        console.error('  \x1b[90mmacOS/Linux:\x1b[0m  \x1b[36mcurl -fsSL https://claude.ai/install.sh | bash\x1b[0m');
-        console.error('  \x1b[90mPowerShell:\x1b[0m   \x1b[36mirm https://claude.ai/install.ps1 | iex\x1b[0m');
-        console.error('  \x1b[90mWindows CMD:\x1b[0m  \x1b[36mcurl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd\x1b[0m\n');
-        console.error('\x1b[90mNote: If multiple installations exist, npm takes priority.\x1b[0m\n');
+        if (backendName !== 'claude') {
+            // Custom backend not found - show a concise message
+            console.error(`\n\x1b[1m\x1b[33m"${backendName}" is not installed or not in PATH\x1b[0m\n`);
+            console.error(`Make sure "${backendName}" is installed and accessible via your shell.\n`);
+            console.error(`You can also set HAPPY_CLAUDE_PATH to the exact path of the CLI executable.\n`);
+        } else {
+            console.error('\n\x1b[1m\x1b[33mClaude Code is not installed\x1b[0m\n');
+            console.error('Please install Claude Code using one of these methods:\n');
+            console.error('\x1b[1mOption 1 - npm (recommended, highest priority):\x1b[0m');
+            console.error('  \x1b[36mnpm install -g @anthropic-ai/claude-code\x1b[0m\n');
+            console.error('\x1b[1mOption 2 - Homebrew (macOS/Linux):\x1b[0m');
+            console.error('  \x1b[36mbrew install claude-code\x1b[0m\n');
+            console.error('\x1b[1mOption 3 - Native installer:\x1b[0m');
+            console.error('  \x1b[90mmacOS/Linux:\x1b[0m  \x1b[36mcurl -fsSL https://claude.ai/install.sh | bash\x1b[0m');
+            console.error('  \x1b[90mPowerShell:\x1b[0m   \x1b[36mirm https://claude.ai/install.ps1 | iex\x1b[0m');
+            console.error('  \x1b[90mWindows CMD:\x1b[0m  \x1b[36mcurl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd\x1b[0m\n');
+            console.error('\x1b[90mNote: If multiple installations exist, npm takes priority.\x1b[0m\n');
+        }
         process.exit(1);
     }
 
     const version = getVersion(result.path);
     const versionStr = version ? ` v${version}` : '';
-    console.error(`\x1b[90mUsing Claude Code${versionStr} from ${result.source}\x1b[0m`);
+    const displayName = backendName !== 'claude' ? backendName : 'Claude Code';
+    console.error(`\x1b[90mUsing ${displayName}${versionStr} from ${result.source}\x1b[0m`);
 
     return result.path;
 }

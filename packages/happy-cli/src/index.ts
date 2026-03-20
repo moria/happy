@@ -535,8 +535,15 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
     return;
   } else {
 
-    // If the first argument is claude, remove it
-    if (args.length > 0 && args[0] === 'claude') {
+    // Detect Claude-compatible backend name from first argument
+    // Built-in subcommands are already handled above, so anything remaining
+    // that isn't a flag is treated as a backend name (e.g. 'claude', 'claude-internal', 'claude-dev')
+    if (args.length > 0 && !args[0].startsWith('-')) {
+      const backendName = args[0]
+      if (backendName !== 'claude') {
+        // Custom backend: set env var for discovery logic in launcher scripts and SDK utils
+        process.env.HAPPY_CLAUDE_BACKEND = backendName
+      }
       args.shift()
     }
 
@@ -631,6 +638,7 @@ ${chalk.bold('happy')} - Claude Code On the Go
 
 ${chalk.bold('Usage:')}
   happy [options]         Start Claude with mobile control
+  happy <backend>         Start a Claude-compatible CLI backend
   happy auth              Manage authentication
   happy codex             Start Codex mode
   happy gemini            Start Gemini mode (ACP)
@@ -643,7 +651,9 @@ ${chalk.bold('Usage:')}
   happy doctor            System diagnostics & troubleshooting
 
 ${chalk.bold('Examples:')}
-  happy                    Start session
+  happy                    Start session (default: claude)
+  happy claude-internal    Start with claude-internal backend
+  happy claude-dev         Start with any Claude-compatible CLI
   happy --yolo             Start with bypassing permissions
                             happy sugar for --dangerously-skip-permissions
   happy --chrome           Enable Chrome browser access for this session
