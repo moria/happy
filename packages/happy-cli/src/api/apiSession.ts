@@ -243,6 +243,11 @@ export class ApiSessionClient extends EventEmitter {
     private routeIncomingMessage(message: unknown) {
         const userResult = UserMessageSchema.safeParse(message);
         if (userResult.success) {
+            // Ignore messages sent by this CLI instance — they echo back from the server
+            // via WebSocket broadcast and would incorrectly trigger a mode switch.
+            if (userResult.data.meta?.sentFrom === 'cli') {
+                return;
+            }
             if (this.pendingMessageCallback) {
                 this.pendingMessageCallback(userResult.data);
             } else {
