@@ -132,8 +132,12 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
                 logger.debug('[local]: launch error', e);
                 // If Claude exited with non-zero exit code, propagate it
                 if (e instanceof ExitCodeError) {
-                    session.client.closeClaudeSessionTurn('failed');
-                    exitReason = { type: 'exit', code: e.exitCode };
+                    // If exitReason was already set by doSwitch/doAbort, don't override it —
+                    // the ExitCodeError is just a side effect of aborting the subprocess.
+                    if (!exitReason) {
+                        session.client.closeClaudeSessionTurn('failed');
+                        exitReason = { type: 'exit', code: e.exitCode };
+                    }
                     break;
                 }
                 if (!exitReason) {
