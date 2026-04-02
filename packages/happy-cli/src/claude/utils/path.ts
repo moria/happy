@@ -2,7 +2,19 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 export function getProjectPath(workingDirectory: string) {
-    const projectId = resolve(workingDirectory).replace(/[^a-zA-Z0-9-]/g, '-');
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+    const resolved = resolve(workingDirectory);
+
+    // CodeBuddy CLI uses a different path encoding than Claude Code:
+    // - Claude Code: replace all non-alphanumeric/dash chars with dash (keeps leading dash)
+    // - CodeBuddy:   strip leading slash, then replace only slashes with dash (preserves _ etc.)
+    let projectId: string;
+    if (backendName === 'codebuddy') {
+        projectId = resolved.replace(/^\//, '').replace(/\//g, '-');
+    } else {
+        projectId = resolved.replace(/[^a-zA-Z0-9-]/g, '-');
+    }
+
     const claudeConfigDir = getClaudeConfigDir();
     return join(claudeConfigDir, 'projects', projectId);
 }

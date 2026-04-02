@@ -130,6 +130,11 @@ function detectSourceFromPath(resolvedPath) {
         return 'npm';
     }
 
+    // CodeBuddy: @tencent-ai/codebuddy-code npm package
+    if (normalizedPath.includes('node_modules') && normalizedPath.includes('@tencent-ai') && normalizedPath.includes('codebuddy-code')) {
+        return 'npm';
+    }
+
     // Windows-specific detection (detect by path patterns, not current platform)
     if (normalizedPath.includes('appdata') || normalizedPath.includes('program files') || normalizedPath.endsWith('.exe')) {
         // Windows npm
@@ -466,8 +471,14 @@ function getClaudeCliPath() {
     const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
     const result = findGlobalClaudeCliPath();
     if (!result) {
-        if (backendName !== 'claude') {
-            // Custom backend not found - show a concise message
+        if (backendName === 'codebuddy') {
+            // CodeBuddy backend not found - show specific install instructions
+            console.error(`\n\x1b[1m\x1b[33mCodeBuddy Code is not installed\x1b[0m\n`);
+            console.error('Please install CodeBuddy Code:\n');
+            console.error('  \x1b[36mnpm install -g @tencent-ai/codebuddy-code\x1b[0m\n');
+            console.error('Then run \x1b[36mhappy codebuddy\x1b[0m or set \x1b[36mHAPPY_CLAUDE_BACKEND=codebuddy\x1b[0m\n');
+        } else if (backendName !== 'claude') {
+            // Other custom backend not found - show a concise message
             console.error(`\n\x1b[1m\x1b[33m"${backendName}" is not installed or not in PATH\x1b[0m\n`);
             console.error(`Make sure "${backendName}" is installed and accessible via your shell.\n`);
             console.error(`You can also set HAPPY_CLAUDE_PATH to the exact path of the CLI executable.\n`);
@@ -506,19 +517,33 @@ function runClaudeCli(cliPath) {
     // Check if it's a JavaScript file (.js or .cjs) or a binary file
     const isJsFile = cliPath.endsWith('.js') || cliPath.endsWith('.cjs');
     
-    // Custom backends (e.g. claude-internal) must always be spawned as a child process,
-    // because import() may not trigger their CLI entry point (different bundling/packaging).
-    // Only the official Claude Code cli.js is guaranteed to work with import().
+    // Determine backend and whether to use in-process import or spawn.
+    // - Official Claude Code (.js): import() — keeps interceptors working
+    // - CodeBuddy CLI Local mode: import() — same-process for proper TTY control
+    //   (cbc's TUI requires being the terminal foreground process)
+    // - CodeBuddy CLI Remote mode (headless): spawn — pipe-based, no TTY needed
+    // - claude-internal and other custom backends: spawn — different bundling
     const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
-    const isCustomBackend = backendName !== 'claude';
+    const launcherArgs = process.argv.slice(2);
+    const isHeadlessMode = launcherArgs.includes('--output-format') || launcherArgs.includes('--input-format');
+    
+    // cbc uses import() only in Local (interactive) mode for proper TTY control;
+    // in Remote (headless) mode it must spawn so pipes work correctly.
+    const useImport = (isJsFile && backendName === 'claude')
+        || (backendName === 'codebuddy' && !isHeadlessMode);
 
-    if (isJsFile && !isCustomBackend) {
-        // Official Claude Code JS file - use import to keep interceptors working
-        const importUrl = pathToFileURL(cliPath).href;
-        import(importUrl);
+    if (useImport) {
+        if (backendName === 'codebuddy') {
+            // CodeBuddy: use synchronous require() for deterministic TUI initialization.
+            // import() is async and can cause TTY race conditions with Happy's stdin management.
+            require(cliPath);
+        } else {
+            // Official Claude Code: use import() to keep interceptors working
+            const importUrl = pathToFileURL(cliPath).href;
+            import(importUrl);
+        }
     } else {
-        // Binary file, or custom backend JS file - spawn as child process
-        // Note: Interceptors won't work, but that's acceptable for these cases
+        // Spawn as child process — for headless/pipe mode or unsupported backends
         const args = process.argv.slice(2);
         const child = spawn(isJsFile ? process.execPath : cliPath, isJsFile ? [cliPath, ...args] : args, {
             stdio: 'inherit',

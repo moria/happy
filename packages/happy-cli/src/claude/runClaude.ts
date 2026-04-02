@@ -223,16 +223,19 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     logger.debug(`[START] Hook server started on port ${hookServer.port}`);
 
     // Generate hook settings for Claude session tracking
-    // Custom backends (e.g. claude-internal) strip --settings flag, so we inject
+    // Some backends (e.g. claude-internal) strip the --settings flag, so we inject
     // hooks directly into their settings.json instead of using a temp file.
+    // Backends that natively support --settings (claude, codebuddy) use the temp file approach.
     const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
-    const isCustomBackend = backendName !== 'claude';
+    const BACKENDS_REQUIRING_SETTINGS_INJECT = new Set(['claude-internal']);
+    const needsSettingsInject = BACKENDS_REQUIRING_SETTINGS_INJECT.has(backendName);
+    logger.debug(`[START] Backend: ${backendName}, needsSettingsInject: ${needsSettingsInject}`);
 
     const hookSettingsPath = generateHookSettingsFile(hookServer.port);
     logger.debug(`[START] Generated hook settings file: ${hookSettingsPath}`);
 
     let injectedBackendSettingsPath: string | null = null;
-    if (isCustomBackend) {
+    if (needsSettingsInject) {
         injectedBackendSettingsPath = injectHookIntoBackendSettings(hookServer.port);
         logger.debug(`[START] Injected hooks into backend settings: ${injectedBackendSettingsPath}`);
     }

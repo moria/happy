@@ -294,7 +294,11 @@ export function query(config: {
         if (typeof prompt === 'string') {
             throw new Error('canCallTool callback requires --input-format stream-json. Please set prompt as an AsyncIterable.')
         }
-        args.push('--permission-prompt-tool', 'stdio')
+        // CodeBuddy CLI does not support --permission-prompt-tool; skip it to avoid exit code 1.
+        const backendForPermTool = process.env.HAPPY_CLAUDE_BACKEND || 'claude'
+        if (backendForPermTool !== 'codebuddy') {
+            args.push('--permission-prompt-tool', 'stdio')
+        }
     }
     if (continueConversation) args.push('--continue')
     if (resume) args.push('--resume', resume)
@@ -319,6 +323,12 @@ export function query(config: {
         args.push('--print', prompt.trim())
     } else {
         args.push('--input-format', 'stream-json')
+        // CodeBuddy CLI (cbc) requires --print to enter non-interactive pipe mode,
+        // otherwise it enters interactive terminal mode and ignores stdin stream-json.
+        const backendForPrint = process.env.HAPPY_CLAUDE_BACKEND || 'claude'
+        if (backendForPrint === 'codebuddy') {
+            args.push('--print')
+        }
     }
 
     // Determine how to spawn Claude Code
