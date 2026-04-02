@@ -19,7 +19,7 @@ import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
-import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/claude/utils/generateHookSettings';
+import { generateHookSettingsFile, cleanupHookSettingsFile, injectHookIntoBackendSettings, removeHookFromBackendSettings } from '@/claude/utils/generateHookSettings';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
@@ -222,9 +222,20 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     });
     logger.debug(`[START] Hook server started on port ${hookServer.port}`);
 
-    // Generate hook settings file for Claude
+    // Generate hook settings for Claude session tracking
+    // Custom backends (e.g. claude-internal) strip --settings flag, so we inject
+    // hooks directly into their settings.json instead of using a temp file.
+    const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+    const isCustomBackend = backendName !== 'claude';
+
     const hookSettingsPath = generateHookSettingsFile(hookServer.port);
     logger.debug(`[START] Generated hook settings file: ${hookSettingsPath}`);
+
+    let injectedBackendSettingsPath: string | null = null;
+    if (isCustomBackend) {
+        injectedBackendSettingsPath = injectHookIntoBackendSettings(hookServer.port);
+        logger.debug(`[START] Injected hooks into backend settings: ${injectedBackendSettingsPath}`);
+    }
 
     // Print log file path
     const logPath = logger.logFilePath;
@@ -414,9 +425,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // Stop Happy MCP server
             happyServer.stop();
 
-            // Stop Hook server and cleanup settings file
+            // Stop Hook server and cleanup settings files
             hookServer.stop();
             cleanupHookSettingsFile(hookSettingsPath);
+            if (injectedBackendSettingsPath) removeHookFromBackendSettings(injectedBackendSettingsPath);
 
             logger.debug('[START] Cleanup complete, exiting');
             process.exit(0);
@@ -500,10 +512,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     happyServer.stop();
     logger.debug('Stopped Happy MCP server');
 
-    // Stop Hook server and cleanup settings file
+    // Stop Hook server and cleanup settings files
     hookServer.stop();
     cleanupHookSettingsFile(hookSettingsPath);
-    logger.debug('Stopped Hook server and cleaned up settings file');
+    if (injectedBackendSettingsPath) removeHookFromBackendSettings(injectedBackendSettingsPath);
+    logger.debug('Stopped Hook server and cleaned up settings files');
 
     // Exit with the code from Claude
     process.exit(exitCode);

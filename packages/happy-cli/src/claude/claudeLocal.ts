@@ -226,14 +226,11 @@ export async function claudeLocal(opts: {
             }
 
             // Add hook settings for session tracking (when available)
-            // Skip for custom backends — they may not support --settings flag
-            const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
-            const isCustomBackend = backendName !== 'claude';
-            if (opts.hookSettingsPath && !isCustomBackend) {
+            // Claude-compatible backends (e.g. claude-internal) transparently pass
+            // all CLI args to the underlying @anthropic-ai/claude-code, which supports --settings.
+            if (opts.hookSettingsPath) {
                 args.push('--settings', opts.hookSettingsPath);
                 logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);
-            } else if (opts.hookSettingsPath && isCustomBackend) {
-                logger.debug(`[ClaudeLocal] Skipping --settings for custom backend '${backendName}' (may not support it)`);
             }
 
             if (!claudeCliPath || !existsSync(claudeCliPath)) {
