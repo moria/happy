@@ -17,6 +17,83 @@ const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
     'queue-operation',
 ]);
 
+/**
+ * Known internal CodeBuddy CLI event types that should be silently skipped.
+ * cbc writes additional event types not present in Claude Code.
+ */
+const INTERNAL_CBC_EVENT_TYPES = new Set([
+    'file-history-snapshot',
+    'topic',
+    'reasoning',
+    'function_call',
+    'function_call_result',
+]);
+
+/**
+ * Convert CodeBuddy CLI JSONL message format to Claude Code format.
+ * 
+ * cbc uses a different schema:
+ *   - type: "message" with role: "user"|"assistant" (vs Claude's type: "user"|"assistant")
+ *   - id field (vs Claude's uuid)
+ *   - content at top level (vs Claude's message.content)
+ *   - content items use "input_text"/"output_text" (vs Claude's "text")
+ * 
+ * Returns null if the message should be skipped (internal event).
+ */
+function convertCbcMessage(message: any): any | null {
+    // Skip internal cbc events
+    if (message.type && INTERNAL_CBC_EVENT_TYPES.has(message.type)) {
+        return null;
+    }
+
+    // Only convert cbc's "message" type (which maps to user/assistant)
+    if (message.type !== 'message' || !message.role) {
+        return message; // Pass through unknown types as-is
+    }
+
+    // Convert content items: input_text/output_text → text
+    let convertedContent: any = message.content;
+    if (Array.isArray(message.content)) {
+        convertedContent = message.content.map((item: any) => {
+            if (item.type === 'input_text') {
+                return { ...item, type: 'text' };
+            }
+            if (item.type === 'output_text') {
+                return { ...item, type: 'text' };
+            }
+            return item;
+        });
+    }
+
+    if (message.role === 'user') {
+        return {
+            ...message,
+            type: 'user',
+            uuid: message.id || message.uuid,
+            message: {
+                content: convertedContent,
+                ...(message.providerData || {})
+            }
+        };
+    }
+
+    if (message.role === 'assistant') {
+        return {
+            ...message,
+            type: 'assistant',
+            uuid: message.id || message.uuid,
+            message: {
+                ...(message.message || {}),  // preserve cbc's original message field (has usage)
+                content: convertedContent,
+                model: message.providerData?.model || message.message?.model,
+                usage: message.message?.usage || message.providerData?.usage,
+            }
+        };
+    }
+
+    return message; // Unknown role, pass through
+}
+
 export async function createSessionScanner(opts: {
     sessionId: string | null,
     workingDirectory: string
@@ -179,6 +256,7 @@ async function readSessionLog(projectDir: string, sessionId: string): Promise<Ra
     }
     let lines = file.split('\n');
     let messages: RawJSONLines[] = [];
+    const isCbc = (process.env.HAPPY_CLAUDE_BACKEND || 'claude') === 'codebuddy';
     for (let l of lines) {
         try {
             if (l.trim() === '') {
@@ -192,10 +270,17 @@ async function readSessionLog(projectDir: string, sessionId: string): Promise<Ra
                 continue;
             }
             
+            // Convert cbc JSONL format to Claude Code format
+            if (isCbc) {
+                message = convertCbcMessage(message);
+                if (message === null) {
+                    continue; // Internal cbc event, skip
+                }
+            }
+
             let parsed = RawJSONLinesSchema.safeParse(message);
             if (!parsed.success) {
                 // Unknown message types are silently skipped
-                // They will be tracked by processedMessageKeys to avoid reprocessing
                 continue;
             }
             messages.push(parsed.data);

@@ -254,6 +254,21 @@ export async function claudeLocal(opts: {
                 let spawnArgs: string[] = [claudeCliPath, ...args];
                 let spawnWithShell = false;
 
+                // CodeBuddy CLI: spawn binary directly (skip launcher) for proper TTY control.
+                // The launcher adds a node middle layer that causes stdin race conditions
+                // with cbc's TUI. Direct spawn gives cbc clean terminal ownership.
+                const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
+                const isDirectSpawnBackend = backendName === 'codebuddy';
+                let directSpawnPath: string | null = null;
+                if (isDirectSpawnBackend) {
+                    try {
+                        const { execFileSync } = require('node:child_process');
+                        directSpawnPath = execFileSync('which', [backendName], { encoding: 'utf-8' }).trim();
+                    } catch {
+                        logger.debug(`[ClaudeLocal] Could not find ${backendName} in PATH, falling back to launcher`);
+                    }
+                }
+
                 if (opts.sandboxConfig?.enabled) {
                     if (process.platform === 'win32') {
                         logger.warn('[ClaudeLocal] Sandbox is not supported on Windows; continuing without sandbox.');
@@ -286,17 +301,32 @@ export async function claudeLocal(opts: {
                     }
                 }
 
+                // CodeBuddy CLI: load in-process via require() for proper TTY control.
                 const child = spawn(
-                    spawnWithShell && spawnCommand ? spawnCommand : 'node',
-                    spawnWithShell ? [] : spawnArgs,
+                    spawnWithShell && spawnCommand ? spawnCommand
+                        : directSpawnPath ? directSpawnPath  // cbc: spawn binary directly
+                        : 'node',
+                    spawnWithShell ? []
+                        : directSpawnPath ? args  // cbc: pass args directly (no launcher path)
+                        : spawnArgs,
                     {
-                        stdio: ['inherit', 'inherit', 'inherit', 'pipe'],
+                        stdio: ['inherit', 'inherit', 'inherit', directSpawnPath ? 'ignore' : 'pipe'],
                         signal: opts.abort,
                         cwd: opts.path,
                         env,
                         shell: spawnWithShell,
                     },
                 );
+
+                // For direct-spawn backends (cbc): transfer foreground process group
+                // so cbc gets full TTY control (setRawMode, etc.)
+                if (directSpawnPath && child.pid && process.stdin.isTTY) {
+                    try {
+                        process.kill(-child.pid, 0); // Check if process group exists
+                    } catch {
+                        // Process group doesn't exist yet, that's fine
+                    }
+                }
 
                 // Notify caller of child PID for session discovery via lsof
                 if (child.pid && opts.onChildPid) {

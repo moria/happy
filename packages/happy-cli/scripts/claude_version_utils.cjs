@@ -519,29 +519,15 @@ function runClaudeCli(cliPath) {
     
     // Determine backend and whether to use in-process import or spawn.
     // - Official Claude Code (.js): import() — keeps interceptors working
-    // - CodeBuddy CLI Local mode: import() — same-process for proper TTY control
-    //   (cbc's TUI requires being the terminal foreground process)
-    // - CodeBuddy CLI Remote mode (headless): spawn — pipe-based, no TTY needed
-    // - claude-internal and other custom backends: spawn — different bundling
+    // - All other backends (cbc, claude-internal): spawn as child process
+    //   Note: For cbc Local mode, claudeLocal.ts spawns cbc directly (bypasses launcher)
     const backendName = process.env.HAPPY_CLAUDE_BACKEND || 'claude';
-    const launcherArgs = process.argv.slice(2);
-    const isHeadlessMode = launcherArgs.includes('--output-format') || launcherArgs.includes('--input-format');
-    
-    // cbc uses import() only in Local (interactive) mode for proper TTY control;
-    // in Remote (headless) mode it must spawn so pipes work correctly.
-    const useImport = (isJsFile && backendName === 'claude')
-        || (backendName === 'codebuddy' && !isHeadlessMode);
+    const useImport = isJsFile && backendName === 'claude';
 
     if (useImport) {
-        if (backendName === 'codebuddy') {
-            // CodeBuddy: use synchronous require() for deterministic TUI initialization.
-            // import() is async and can cause TTY race conditions with Happy's stdin management.
-            require(cliPath);
-        } else {
-            // Official Claude Code: use import() to keep interceptors working
-            const importUrl = pathToFileURL(cliPath).href;
-            import(importUrl);
-        }
+        // Official Claude Code: use import() to keep interceptors working
+        const importUrl = pathToFileURL(cliPath).href;
+        import(importUrl);
     } else {
         // Spawn as child process — for headless/pipe mode or unsupported backends
         const args = process.argv.slice(2);

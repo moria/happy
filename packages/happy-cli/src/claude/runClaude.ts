@@ -179,20 +179,24 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     }
 
     // Extract SDK metadata in background and update session when ready
-    extractSDKMetadataAsync(async (sdkMetadata) => {
-        logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
-        try {
-            // Update session metadata with tools and slash commands
-            api.sessionSyncClient(response).updateMetadata((currentMetadata) => ({
-                ...currentMetadata,
-                tools: sdkMetadata.tools,
-                slashCommands: sdkMetadata.slashCommands
-            }));
-            logger.debug('[start] Session metadata updated with SDK capabilities');
-        } catch (error) {
-            logger.debug('[start] Failed to update session metadata:', error);
-        }
-    });
+    // Skip for cbc backend: metadata extraction spawns a background cbc process
+    // that competes for stdin with the main TUI process (loaded via require()).
+    if ((process.env.HAPPY_CLAUDE_BACKEND || 'claude') !== 'codebuddy') {
+        extractSDKMetadataAsync(async (sdkMetadata) => {
+            logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
+            try {
+                // Update session metadata with tools and slash commands
+                api.sessionSyncClient(response).updateMetadata((currentMetadata) => ({
+                    ...currentMetadata,
+                    tools: sdkMetadata.tools,
+                    slashCommands: sdkMetadata.slashCommands
+                }));
+                logger.debug('[start] Session metadata updated with SDK capabilities');
+            } catch (error) {
+                logger.debug('[start] Failed to update session metadata:', error);
+            }
+        });
+    }
 
     // Create realtime session
     const session = api.sessionSyncClient(response);
